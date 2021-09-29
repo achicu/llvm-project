@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <fstream>
+
 #include "lld/Common/Driver.h"
 #include "Config.h"
 #include "InputChunks.h"
@@ -822,6 +824,9 @@ static void splitSections() {
 
 void writeSymbolName(std::ofstream& out,
     DenseMap<Symbol*, uint64_t>* functionMap, Symbol* sym) {
+  // FIXME: The unique index makes it easy to differentiate between
+  // symbols that end up having the same name. Check if we can
+  // use the index used by the WASM writer instead.
   auto index = functionMap->insert(
       std::make_pair(sym, functionMap->size())).first->second;
   out << index << ":" << sym->getName().str() << "\n";
@@ -833,6 +838,11 @@ void writeCallGraphSymbol(std::ofstream& out,
   out << "1:";
   writeSymbolName(out, functionMap, sym);
   out << "6:" << toString(sym->kind()) << "\n";
+
+  // The exported flag was not actually needed, just added for reference.
+  // I initially thought that some methods were incorrectly marked
+  // for being exported, so it was useful to identify the expected
+  // root methods.
   if (sym->isNoStrip() || sym->isExported())
     out << "9:" << (sym->isNoStrip() ? "isNoStrip" : "")
       << ":" << (sym->isExported() ? "isExported" : "") << "\n";
@@ -845,16 +855,14 @@ void writeCallGraphSymbol(std::ofstream& out,
   }
 
   if (InputChunk *chunk = sym->getChunk()) {
-    auto comdat = chunk->getComdatName();
-    if (!comdat.empty())
-      out << "c:" << comdat.str() << "\n";
-
     llvm::SmallSet<Symbol*, 8> seen;
     for (const WasmRelocation reloc : chunk->getRelocations()) {
       if (reloc.Type == R_WASM_TYPE_INDEX_LEB)
         continue;
       Symbol *relSym = chunk->file->getSymbol(reloc.Index);
       if (seen.insert(relSym).second) {
+        // We could just write the symbol index here, but it makes it
+        // easy to walk the graph manually in the generated file.
         out << "3:";
         writeSymbolName(out, functionMap, relSym);
       }
@@ -868,6 +876,8 @@ void writeCallGraph() {
   if (config->callGraphFile.empty())
     return;
 
+  // FIXME: Check if the parent folder exists first.
+  // FIXME: Check if LLVM has an out file stream implementation.
   std::ofstream out(config->callGraphFile.str(),
     std::ios::trunc | std::ios::out);
 
@@ -876,6 +886,10 @@ void writeCallGraph() {
   if (WasmSym::callDtors && WasmSym::callDtors->isLive())
     writeCallGraphSymbol(out, &functionMap, WasmSym::callDtors);
 
+  // isReferenced allows to skip on symbols that share the same
+  // InputChunk with other symbols. The actual symbol was not
+  // referenced, so it makes it easy to skip on thousands of
+  // otherwise unused symbol names.
   for (auto sym : symtab->getSymbols()) {
     if (sym->isLive() && !sym->isStub
       && !sym->isDiscarded() && sym->isReferenced())
@@ -889,6 +903,8 @@ void writeCallGraph() {
         writeCallGraphSymbol(out, &functionMap, sym);
   }
 
+  // Makes it easy to identify the init functions. We don't actually
+  // need the file name in here, but makes it easy to read the generated file.
   for (auto file : symtab->objectFiles) {
     out << "4:" << file->getName().str() << ":" << file->archiveName << "\n";
     if (auto obj = dyn_cast<ObjFile>(file)) {
@@ -900,7 +916,6 @@ void writeCallGraph() {
         out << "5:";
         writeSymbolName(out, &functionMap, initSym);
       }
-
     }
 
     out << "\n";
