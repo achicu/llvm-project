@@ -96,6 +96,7 @@ public:
   // Indicates that the section or import for this symbol will be included in
   // the final image.
   bool isLive() const;
+  inline bool isReferenced() const { return referenced; }
 
   // Marks the symbol's InputChunk as Live, so that it will be included in the
   // final image.

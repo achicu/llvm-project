@@ -32,6 +32,7 @@
 #include "llvm/Support/Process.h"
 #include "llvm/Support/TarWriter.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/ADT/SmallSet.h"
 
 #define DEBUG_TYPE "lld"
 
@@ -379,6 +380,7 @@ static void readConfigs(opt::InputArgList &args) {
                    LLVM_ENABLE_NEW_PASS_MANAGER);
   config->ltoDebugPassManager = args.hasArg(OPT_lto_debug_pass_manager);
   config->mapFile = args.getLastArgValue(OPT_Map);
+  config->callGraphFile = args.getLastArgValue(OPT_CallGraph);
   config->optimize = args::getInteger(args, OPT_O, 1);
   config->outputFile = args.getLastArgValue(OPT_o);
   config->relocatable = args.hasArg(OPT_relocatable);
@@ -818,6 +820,95 @@ static void splitSections() {
   });
 }
 
+void writeSymbolName(std::ofstream& out,
+    DenseMap<Symbol*, uint64_t>* functionMap, Symbol* sym) {
+  auto index = functionMap->insert(
+      std::make_pair(sym, functionMap->size())).first->second;
+  out << index << ":" << sym->getName().str() << "\n";
+  out << "7:" << toString(*sym) << "\n";
+}
+
+void writeCallGraphSymbol(std::ofstream& out,
+    DenseMap<Symbol*, uint64_t>* functionMap, Symbol* sym) {
+  out << "1:";
+  writeSymbolName(out, functionMap, sym);
+  out << "6:" << toString(sym->kind()) << "\n";
+  if (sym->isNoStrip() || sym->isExported())
+    out << "9:" << (sym->isNoStrip() ? "isNoStrip" : "")
+      << ":" << (sym->isExported() ? "isExported" : "") << "\n";
+
+  if (dyn_cast<FunctionSymbol>(sym)) {
+    InputFile *file = sym->getFile();
+    if (file) {
+      out << "2:" << file->getName().str() << ":" << file->archiveName << "\n";
+    }
+  }
+
+  if (InputChunk *chunk = sym->getChunk()) {
+    auto comdat = chunk->getComdatName();
+    if (!comdat.empty())
+      out << "c:" << comdat.str() << "\n";
+
+    llvm::SmallSet<Symbol*, 8> seen;
+    for (const WasmRelocation reloc : chunk->getRelocations()) {
+      if (reloc.Type == R_WASM_TYPE_INDEX_LEB)
+        continue;
+      Symbol *relSym = chunk->file->getSymbol(reloc.Index);
+      if (seen.insert(relSym).second) {
+        out << "3:";
+        writeSymbolName(out, functionMap, relSym);
+      }
+    }
+  }
+
+  out << "\n";
+}
+
+void writeCallGraph() {
+  if (config->callGraphFile.empty())
+    return;
+
+  std::ofstream out(config->callGraphFile.str(),
+    std::ios::trunc | std::ios::out);
+
+  DenseMap<Symbol*, uint64_t> functionMap;
+
+  if (WasmSym::callDtors && WasmSym::callDtors->isLive())
+    writeCallGraphSymbol(out, &functionMap, WasmSym::callDtors);
+
+  for (auto sym : symtab->getSymbols()) {
+    if (sym->isLive() && !sym->isStub
+      && !sym->isDiscarded() && sym->isReferenced())
+      writeCallGraphSymbol(out, &functionMap, sym);
+  }
+
+  for (auto file : symtab->objectFiles) {
+    for (Symbol *sym : file->getSymbols())
+      if (sym->isLocal() && sym->isLive()
+        && !sym->isDiscarded() && !sym->isStub && sym->isReferenced())
+        writeCallGraphSymbol(out, &functionMap, sym);
+  }
+
+  for (auto file : symtab->objectFiles) {
+    out << "4:" << file->getName().str() << ":" << file->archiveName << "\n";
+    if (auto obj = dyn_cast<ObjFile>(file)) {
+      const WasmLinkingData &l = obj->getWasmObj()->linkingData();
+      for (const WasmInitFunc &f : l.InitFunctions) {
+        auto *initSym = obj->getFunctionSymbol(f.Symbol);
+        if (initSym->isDiscarded())
+          continue;
+        out << "5:";
+        writeSymbolName(out, &functionMap, initSym);
+      }
+
+    }
+
+    out << "\n";
+  }
+
+  out.close();
+}
+
 void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   WasmOptTable parser;
   opt::InputArgList args = parser.parse(argsArr.slice(1));
@@ -1020,6 +1111,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   // Write the result to the file.
   writeResult();
+
+  // Write the call graph after the symbols
+  // have been processed to correctly identify
+  // the live symbols.
+  writeCallGraph();
 }
 
 } // namespace wasm

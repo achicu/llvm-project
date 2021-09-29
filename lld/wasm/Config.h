@@ -66,6 +66,7 @@ struct Configuration {
 
   llvm::StringRef entry;
   llvm::StringRef mapFile;
+  llvm::StringRef callGraphFile;
   llvm::StringRef outputFile;
   llvm::StringRef thinLTOCacheDir;
 

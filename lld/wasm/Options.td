@@ -78,6 +78,7 @@ def m: JoinedOrSeparate<["-"], "m">, HelpText<"Set target emulation">;
 def mllvm: S<"mllvm">, HelpText<"Options to pass to LLVM">;
 
 defm Map: Eq<"Map", "Print a link map to the specified file">;
+defm CallGraph: Eq<"CallGraph", "Print the call graph to the specified file">;
 
 def no_fatal_warnings: F<"no-fatal-warnings">;
 
