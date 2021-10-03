@@ -829,8 +829,19 @@ void writeSymbolName(std::ofstream& out,
   // use the index used by the WASM writer instead.
   auto index = functionMap->insert(
       std::make_pair(sym, functionMap->size())).first->second;
+
+  if (dyn_cast<FunctionSymbol>(sym)) {
+    if (InputChunk *chunk = sym->getChunk()) {
+      if (!chunk->getDebugName().empty()) {
+        out << index << ":" << chunk->getDebugName().str() << "\n";
+      } else {
+        out << index << ":" << chunk->getName().str() << "\n";
+      }
+      return;
+    }
+  }
+
   out << index << ":" << sym->getName().str() << "\n";
-  out << "7:" << toString(*sym) << "\n";
 }
 
 void writeCallGraphSymbol(std::ofstream& out,
@@ -838,6 +849,7 @@ void writeCallGraphSymbol(std::ofstream& out,
   out << "1:";
   writeSymbolName(out, functionMap, sym);
   out << "6:" << toString(sym->kind()) << "\n";
+  out << "7:" << demangleItanium(sym->getName()) << "\n";
 
   // The exported flag was not actually needed, just added for reference.
   // I initially thought that some methods were incorrectly marked
